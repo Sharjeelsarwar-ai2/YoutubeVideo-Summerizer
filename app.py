@@ -1,4 +1,3 @@
-
 import html
 import json
 import re
@@ -11,87 +10,236 @@ import streamlit as st
 
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-#
-# Streamlit Cloud:
-# App → Settings → Secrets
-#
-# Add:
-#
-# GROQ_API_KEY = "gsk_..."
-# SUPADATA_API_KEY = "..."
-#
+# PAGE CONFIG
 # ============================================================
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "openai/gpt-oss-120b"
+st.set_page_config(
+    page_title="YouTube Video Summarizer",
+    page_icon="▶️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-SUPADATA_URL = "https://api.supadata.ai/v1/youtube/transcript"
+
+# ============================================================
+# CUSTOM CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at 10% 10%, rgba(255,255,255,0.04), transparent 25%),
+                radial-gradient(circle at 90% 20%, rgba(255,255,255,0.03), transparent 25%),
+                #080808;
+            color: #f5f5f5;
+        }
+
+        .block-container {
+            max-width: 1200px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+        }
+
+        .hero {
+            text-align: center;
+            padding: 2rem 1rem 1.5rem;
+        }
+
+        .hero-badge {
+            display: inline-block;
+            padding: 0.45rem 0.9rem;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 999px;
+            background: rgba(255,255,255,0.05);
+            color: #cfcfcf;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+
+        .hero h1 {
+            font-size: 3.1rem;
+            line-height: 1.05;
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: -0.04em;
+        }
+
+        .hero p {
+            max-width: 720px;
+            margin: 1rem auto 0;
+            color: #9d9d9d;
+            font-size: 1rem;
+            line-height: 1.7;
+        }
+
+        .glass-card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 22px;
+            padding: 1.4rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+            backdrop-filter: blur(18px);
+        }
+
+        .section-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 0.9rem;
+        }
+
+        .result-card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 18px;
+            padding: 1.35rem;
+            margin-top: 1rem;
+        }
+
+        .result-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            margin-bottom: 0.8rem;
+        }
+
+        .timestamp {
+            display: inline-block;
+            padding: 0.28rem 0.55rem;
+            margin-right: 0.45rem;
+            margin-bottom: 0.4rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.08);
+            color: #ffffff;
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+
+        .video-id {
+            color: #888;
+            font-size: 0.78rem;
+        }
+
+        div[data-testid="stMetric"] {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 15px;
+            padding: 0.7rem;
+        }
+
+        .small-muted {
+            color: #888;
+            font-size: 0.82rem;
+        }
+
+        .stButton > button {
+            border-radius: 12px;
+            font-weight: 700;
+            min-height: 2.7rem;
+        }
+
+        .stTextInput > div > div > input {
+            border-radius: 12px;
+        }
+
+        .stSelectbox > div > div {
+            border-radius: 12px;
+        }
+
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 0.8rem;
+            padding-top: 2rem;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-def get_secret(name):
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "transcript_data" not in st.session_state:
+    st.session_state.transcript_data = None
+
+if "video_id" not in st.session_state:
+    st.session_state.video_id = None
+
+if "video_url" not in st.session_state:
+    st.session_state.video_url = None
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def get_secret(name: str):
     """Safely read a Streamlit secret."""
     try:
-        value = st.secrets.get(name, "")
-        return str(value).strip()
+        value = st.secrets.get(name)
+        if value:
+            return str(value).strip()
     except Exception:
-        return ""
+        pass
+
+    return None
 
 
-GROQ_API_KEY = get_secret("GROQ_API_KEY")
-SUPADATA_API_KEY = get_secret("SUPADATA_API_KEY")
-
-
-# ============================================================
-# URL HELPERS
-# ============================================================
-
-def extract_video_id(url):
+def extract_video_id(url: str):
     """Extract a YouTube video ID from common YouTube URL formats."""
-
     if not url:
         return None
 
     url = url.strip()
 
+    # Direct 11-character video ID
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", url):
+        return url
+
     try:
         parsed = urlparse(url)
-
-        hostname = (parsed.hostname or "").lower()
+        host = parsed.netloc.lower().replace("www.", "")
 
         # youtube.com/watch?v=...
-        if hostname in (
-            "youtube.com",
-            "www.youtube.com",
-            "m.youtube.com",
-            "music.youtube.com",
-        ):
-            video_id = parse_qs(parsed.query).get("v", [None])[0]
+        if host in {"youtube.com", "m.youtube.com"}:
+            query = parse_qs(parsed.query)
+            video_id = query.get("v", [None])[0]
 
-            if video_id:
-                return video_id[:11]
+            if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+                return video_id
 
-        # youtu.be/VIDEO_ID
-        if hostname == "youtu.be":
-            video_id = parsed.path.strip("/").split("/")[0]
+            # /shorts/ID
+            parts = [p for p in parsed.path.split("/") if p]
 
-            if video_id:
-                return video_id[:11]
+            if len(parts) >= 2 and parts[0].lower() in {
+                "shorts",
+                "embed",
+                "live",
+            }:
+                candidate = parts[1]
 
-        # youtube.com/shorts/VIDEO_ID
-        if hostname in ("youtube.com", "www.youtube.com"):
-            parts = parsed.path.strip("/").split("/")
+                if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate):
+                    return candidate
 
-            if len(parts) >= 2 and parts[0].lower() == "shorts":
-                return parts[1][:11]
+        # youtu.be/ID
+        if host == "youtu.be":
+            candidate = parsed.path.strip("/").split("/")[0]
 
-        # youtube.com/embed/VIDEO_ID
-        if hostname in ("youtube.com", "www.youtube.com"):
-            parts = parsed.path.strip("/").split("/")
-
-            if len(parts) >= 2 and parts[0].lower() == "embed":
-                return parts[1][:11]
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate):
+                return candidate
 
     except Exception:
         return None
@@ -100,12 +248,13 @@ def extract_video_id(url):
 
 
 def format_timestamp(seconds):
-    """Convert seconds into HH:MM:SS or MM:SS."""
-
+    """Convert seconds to HH:MM:SS or MM:SS."""
     try:
-        seconds = max(0, int(float(seconds)))
+        seconds = float(seconds)
     except (TypeError, ValueError):
         return "00:00"
+
+    seconds = max(0, int(seconds))
 
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
@@ -117,48 +266,62 @@ def format_timestamp(seconds):
     return f"{minutes:02d}:{secs:02d}"
 
 
-# ============================================================
-# TRANSCRIPT NORMALIZATION
-# ============================================================
-
-def normalize_transcript_response(data):
+def normalize_timestamp(value):
     """
-    Convert different transcript response shapes into:
+    Normalize timestamp values.
 
-        [
-            {
-                "text": "...",
-                "start": 0.0,
-                "duration": 2.5
-            },
-            ...
-        ]
+    Supadata may return timestamps in seconds or milliseconds
+    depending on response format.
+    """
+    if value is None:
+        return 0.0
 
-    This keeps timestamp information instead of throwing it away.
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+    # Treat very large values as milliseconds.
+    if number > 100000:
+        number /= 1000
+
+    return max(0.0, number)
+
+
+def extract_transcript_segments(data):
+    """
+    Extract transcript segments from several possible response formats.
     """
 
-    if not isinstance(data, dict):
-        return [], "Transcript API returned an unexpected response."
+    content = None
 
-    # Most useful/expected shape.
-    content = data.get("content")
+    if isinstance(data, dict):
+        if isinstance(data.get("content"), list):
+            content = data["content"]
 
-    # Some APIs wrap transcript in a nested object.
-    if content is None and isinstance(data.get("transcript"), dict):
-        content = data["transcript"].get("content")
+        elif isinstance(data.get("segments"), list):
+            content = data["segments"]
 
-    # Other possible response names.
-    if content is None:
-        content = data.get("segments")
+        elif isinstance(data.get("items"), list):
+            content = data["items"]
 
-    if content is None:
-        content = data.get("items")
+        elif isinstance(data.get("transcript"), list):
+            content = data["transcript"]
 
-    if content is None and isinstance(data.get("transcript"), list):
-        content = data["transcript"]
+        elif isinstance(data.get("data"), dict):
+            nested = data["data"]
 
-    if not isinstance(content, list):
-        return [], "No transcript segments were returned."
+            if isinstance(nested.get("content"), list):
+                content = nested["content"]
+
+            elif isinstance(nested.get("segments"), list):
+                content = nested["segments"]
+
+    elif isinstance(data, list):
+        content = data
+
+    if not content:
+        return []
 
     segments = []
 
@@ -169,14 +332,11 @@ def normalize_transcript_response(data):
         text = (
             item.get("text")
             or item.get("content")
-            or item.get("snippet")
+            or item.get("value")
             or ""
         )
 
-        if not isinstance(text, str):
-            text = str(text)
-
-        text = text.strip()
+        text = str(text).strip()
 
         if not text:
             continue
@@ -184,64 +344,20 @@ def normalize_transcript_response(data):
         start = (
             item.get("start")
             if item.get("start") is not None
-            else item.get("startTime")
+            else item.get("offset")
         )
 
-        duration = (
-            item.get("duration")
-            if item.get("duration") is not None
-            else item.get("dur")
-        )
-
-        # Some transcript providers return milliseconds.
-        try:
-            start = float(start or 0)
-
-            if start > 100000:
-                start = start / 1000
-
-        except (TypeError, ValueError):
-            start = 0.0
-
-        try:
-            duration = float(duration or 0)
-
-            if duration > 100000:
-                duration = duration / 1000
-
-        except (TypeError, ValueError):
-            duration = 0.0
+        duration = item.get("duration", 0)
 
         segments.append(
             {
                 "text": text,
-                "start": start,
-                "duration": duration,
+                "start": normalize_timestamp(start),
+                "duration": normalize_timestamp(duration),
             }
         )
 
-    if not segments:
-        return [], "The transcript was empty."
-
-    return segments, None
-
-
-def build_transcript_text(segments):
-    """Build clean transcript text for AI processing."""
-
-    return " ".join(segment["text"] for segment in segments)
-
-
-def build_timestamped_transcript(segments):
-    """Build transcript while retaining timestamps."""
-
-    lines = []
-
-    for segment in segments:
-        timestamp = format_timestamp(segment["start"])
-        lines.append(f"[{timestamp}] {segment['text']}")
-
-    return "\n".join(lines)
+    return segments
 
 
 # ============================================================
@@ -249,952 +365,555 @@ def build_timestamped_transcript(segments):
 # ============================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_transcript(video_url):
+def get_transcript(video_url: str):
     """
-    Fetch YouTube transcript through Supadata.
-
-    This avoids making the transcript request directly from
-    Streamlit Cloud to YouTube.
+    Fetch YouTube transcript from Supadata.
+    Cached for one hour.
     """
 
-    if not SUPADATA_API_KEY:
-        return None, None, (
+    api_key = get_secret("SUPADATA_API_KEY")
+
+    if not api_key:
+        raise RuntimeError(
             "SUPADATA_API_KEY is not configured. "
-            "Add it to Streamlit Cloud → Settings → Secrets."
+            "Add it under Streamlit Cloud → Settings → Secrets."
         )
 
-    video_id = extract_video_id(video_url)
-
-    if not video_id:
-        return None, None, "Invalid YouTube URL."
-
-    params = {
-        "url": video_url,
-    }
+    endpoint = "https://api.supadata.ai/v1/youtube/transcript"
 
     headers = {
-        "x-api-key": SUPADATA_API_KEY,
+        "x-api-key": api_key,
         "Accept": "application/json",
+    }
+
+    params = {
+        "url": video_url
     }
 
     try:
         response = requests.get(
-            SUPADATA_URL,
-            params=params,
+            endpoint,
             headers=headers,
+            params=params,
             timeout=45,
         )
 
-    except requests.exceptions.Timeout:
-        return None, None, (
-            "The transcript service timed out. "
-            "Please try again."
+    except requests.Timeout:
+        raise RuntimeError(
+            "Supadata timed out while fetching the transcript."
         )
 
-    except requests.exceptions.ConnectionError:
-        return None, None, (
-            "Could not connect to the transcript service. "
-            "Check your internet connection or try again."
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Could not connect to Supadata: {exc}"
         )
-
-    except requests.exceptions.RequestException as exc:
-        return None, None, f"Transcript service request failed: {exc}"
-
-    # --------------------------------------------------------
-    # HTTP ERROR HANDLING
-    # --------------------------------------------------------
 
     if response.status_code == 401:
-        return None, None, (
-            "Supadata rejected the API key. "
-            "Check SUPADATA_API_KEY in Streamlit Secrets."
+        raise RuntimeError(
+            "Supadata rejected the API key. Check SUPADATA_API_KEY."
         )
 
     if response.status_code == 403:
-        return None, None, (
-            "Supadata denied this request. "
-            "Check your API key and account permissions."
+        raise RuntimeError(
+            "Supadata denied this request. Check your Supadata API access."
         )
 
     if response.status_code == 404:
-        return None, None, (
-            "Transcript was not found for this video."
+        raise RuntimeError(
+            "Supadata could not find a transcript for this YouTube video."
         )
 
     if response.status_code == 429:
-        return None, None, (
-            "Transcript API rate limit reached. "
-            "Please wait and try again."
+        raise RuntimeError(
+            "Supadata rate limit reached. Please try again later."
         )
 
     if response.status_code >= 500:
-        return None, None, (
-            "The transcript service is temporarily unavailable. "
-            "Please try again later."
+        raise RuntimeError(
+            f"Supadata server error ({response.status_code}). Please try again."
         )
 
-    if response.status_code != 200:
+    if not response.ok:
         try:
-            error_data = response.json()
-            message = (
-                error_data.get("message")
-                or error_data.get("error")
-                or response.text
-            )
+            details = response.json()
         except Exception:
-            message = response.text
+            details = response.text
 
-        return None, None, (
-            f"Transcript service returned HTTP "
-            f"{response.status_code}: {message}"
+        raise RuntimeError(
+            f"Supadata returned HTTP {response.status_code}: {details}"
         )
-
-    # --------------------------------------------------------
-    # JSON
-    # --------------------------------------------------------
 
     try:
         data = response.json()
     except ValueError:
-        return None, None, (
-            "Transcript service returned invalid JSON."
+        raise RuntimeError(
+            "Supadata returned an invalid JSON response."
         )
 
-    segments, error = normalize_transcript_response(data)
+    segments = extract_transcript_segments(data)
 
-    if error:
-        return None, None, error
+    if not segments:
+        raise RuntimeError(
+            "Supadata returned no usable transcript segments for this video."
+        )
 
-    full_text = build_transcript_text(segments)
-    timestamped_text = build_timestamped_transcript(segments)
+    return segments
 
-    if not full_text.strip():
-        return None, None, "Transcript was empty."
 
-    return segments, timestamped_text, None
+def build_transcript_text(segments):
+    """Build plain transcript text."""
+    return " ".join(
+        segment["text"]
+        for segment in segments
+        if segment["text"].strip()
+    )
+
+
+def build_timestamped_transcript(segments):
+    """Build transcript while preserving timestamps."""
+    lines = []
+
+    for segment in segments:
+        timestamp = format_timestamp(segment["start"])
+        text = segment["text"].strip()
+
+        if text:
+            lines.append(f"[{timestamp}] {text}")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# TOKEN-SAFE CHUNKING
+# ============================================================
+
+def split_timestamped_transcript(
+    segments,
+    max_chars=7000,
+):
+    """
+    Split transcript into smaller chunks.
+
+    We deliberately use a conservative character limit because
+    Groq's current TPM limit is 8,000 tokens.
+    """
+
+    chunks = []
+    current_lines = []
+    current_chars = 0
+
+    for segment in segments:
+
+        timestamp = format_timestamp(segment["start"])
+        text = segment["text"].strip()
+
+        if not text:
+            continue
+
+        line = f"[{timestamp}] {text}"
+
+        # Large individual transcript segment
+        if len(line) > max_chars:
+            words = text.split()
+            partial = []
+            partial_chars = 0
+
+            for word in words:
+                extra = len(word) + 1
+
+                if partial and partial_chars + extra > max_chars:
+                    chunks.append(
+                        {
+                            "start": segment["start"],
+                            "text": (
+                                f"[{timestamp}] "
+                                + " ".join(partial)
+                            ),
+                        }
+                    )
+
+                    partial = []
+                    partial_chars = 0
+
+                partial.append(word)
+                partial_chars += extra
+
+            if partial:
+                chunks.append(
+                    {
+                        "start": segment["start"],
+                        "text": (
+                            f"[{timestamp}] "
+                            + " ".join(partial)
+                        ),
+                    }
+                )
+
+            continue
+
+        if current_lines and current_chars + len(line) + 1 > max_chars:
+            chunks.append(
+                {
+                    "start": current_lines[0]["start"],
+                    "text": "\n".join(
+                        item["text"] for item in current_lines
+                    ),
+                }
+            )
+
+            current_lines = []
+            current_chars = 0
+
+        current_lines.append(
+            {
+                "start": segment["start"],
+                "text": line,
+            }
+        )
+
+        current_chars += len(line) + 1
+
+    if current_lines:
+        chunks.append(
+            {
+                "start": current_lines[0]["start"],
+                "text": "\n".join(
+                    item["text"] for item in current_lines
+                ),
+            }
+        )
+
+    return chunks
 
 
 # ============================================================
 # GROQ
 # ============================================================
 
-def groq_request(messages, max_tokens=3000, retries=2):
-    """Make a robust Groq API request."""
+def ask_groq(
+    user_prompt,
+    system_prompt,
+    max_tokens=900,
+    retries=3,
+):
+    """
+    Call Groq safely with retry handling.
+    """
 
-    if not GROQ_API_KEY:
-        return None, (
+    api_key = get_secret("GROQ_API_KEY")
+
+    if not api_key:
+        raise RuntimeError(
             "GROQ_API_KEY is not configured. "
-            "Add it to Streamlit Cloud → Settings → Secrets."
+            "Add it under Streamlit Cloud → Settings → Secrets."
         )
 
+    endpoint = "https://api.groq.com/openai/v1/chat/completions"
+
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
     payload = {
-        "model": GROQ_MODEL,
-        "messages": messages,
-        "temperature": 0.25,
+        "model": "openai/gpt-oss-120b",
+        "temperature": 0.2,
         "max_tokens": max_tokens,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
     }
 
-    for attempt in range(retries + 1):
+    last_error = None
+
+    for attempt in range(retries):
 
         try:
             response = requests.post(
-                GROQ_URL,
+                endpoint,
                 headers=headers,
                 json=payload,
                 timeout=90,
             )
 
-        except requests.exceptions.Timeout:
-            if attempt < retries:
+        except requests.Timeout:
+            last_error = "Groq request timed out."
+
+            if attempt < retries - 1:
                 time.sleep(2)
                 continue
 
-            return None, (
-                "Groq request timed out. "
-                "Please try again."
-            )
+            raise RuntimeError(last_error)
 
-        except requests.exceptions.ConnectionError:
-            if attempt < retries:
+        except requests.RequestException as exc:
+            last_error = f"Could not connect to Groq: {exc}"
+
+            if attempt < retries - 1:
                 time.sleep(2)
                 continue
 
-            return None, (
-                "Could not connect to Groq. "
-                "Please try again."
-            )
-
-        except requests.exceptions.RequestException as exc:
-            return None, f"Groq request failed: {exc}"
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
-
-        if response.status_code == 200:
-
-            try:
-                data = response.json()
-
-                content = (
-                    data["choices"][0]["message"]["content"]
-                )
-
-                if not content:
-                    return None, "Groq returned an empty response."
-
-                return content.strip(), None
-
-            except (KeyError, IndexError, TypeError, ValueError):
-                return None, (
-                    "Groq returned an unexpected response format."
-                )
-
-        # ----------------------------------------------------
-        # AUTH
-        # ----------------------------------------------------
+            raise RuntimeError(last_error)
 
         if response.status_code == 401:
-            return None, (
-                "Invalid Groq API key. "
-                "Check GROQ_API_KEY in Streamlit Secrets."
+            raise RuntimeError(
+                "Groq rejected the API key. Check GROQ_API_KEY."
             )
 
-        # ----------------------------------------------------
-        # RATE LIMIT
-        # ----------------------------------------------------
+        if response.status_code == 403:
+            raise RuntimeError(
+                "Groq denied the request. Check your API access."
+            )
+
+        if response.status_code == 413:
+            raise RuntimeError(
+                "Groq rejected the request because it is too large. "
+                "The transcript chunk is still too big."
+            )
 
         if response.status_code == 429:
+            retry_after = response.headers.get("retry-after")
 
-            if attempt < retries:
+            try:
+                wait_time = float(retry_after)
+            except (TypeError, ValueError):
+                wait_time = 8
 
-                retry_after = response.headers.get("Retry-After")
-
-                try:
-                    wait_seconds = float(retry_after)
-                except (TypeError, ValueError):
-                    wait_seconds = 3 * (attempt + 1)
-
-                wait_seconds = min(wait_seconds, 20)
-
-                time.sleep(wait_seconds)
+            if attempt < retries - 1:
+                time.sleep(min(max(wait_time, 2), 30))
                 continue
 
-            return None, (
-                "Groq rate limit reached. "
-                "Please wait a little and try again."
+            raise RuntimeError(
+                "Groq rate limit reached. Please try again shortly."
             )
 
-        # ----------------------------------------------------
-        # OTHER ERRORS
-        # ----------------------------------------------------
+        if response.status_code >= 500:
+            last_error = (
+                f"Groq server error ({response.status_code})."
+            )
+
+            if attempt < retries - 1:
+                time.sleep(3)
+                continue
+
+            raise RuntimeError(last_error)
+
+        if not response.ok:
+            try:
+                error_data = response.json()
+                error_message = (
+                    error_data.get("error", {}).get(
+                        "message",
+                        str(error_data),
+                    )
+                )
+            except Exception:
+                error_message = response.text
+
+            raise RuntimeError(
+                f"Groq returned HTTP {response.status_code}: "
+                f"{error_message}"
+            )
 
         try:
-            error_data = response.json()
+            data = response.json()
 
-            message = (
-                error_data.get("error", {}).get("message")
-                if isinstance(error_data.get("error"), dict)
-                else error_data.get("message")
+            return data["choices"][0]["message"]["content"]
+
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise RuntimeError(
+                "Groq returned an unexpected response format."
             )
 
-            if not message:
-                message = response.text
-
-        except Exception:
-            message = response.text
-
-        return None, (
-            f"Groq returned HTTP {response.status_code}: "
-            f"{message}"
-        )
-
-    return None, "Groq request failed."
+    raise RuntimeError(last_error or "Groq request failed.")
 
 
 # ============================================================
-# AI ANALYSIS
+# CHUNK SUMMARIZATION
 # ============================================================
 
-def generate_analysis(
-    transcript,
-    timestamped_transcript,
-    summary_type,
-    include_takeaways,
-    include_topics,
-    include_sentiment,
-    include_actions,
+def summarize_transcript_chunk(
+    chunk_text,
+    chunk_number,
+    total_chunks,
 ):
     """
-    Generate all requested analysis in ONE Groq request.
+    Summarize one small transcript chunk.
 
-    This is much better than making 5 separate requests.
+    The chunk is intentionally small so the request remains
+    below the Groq TPM limit.
     """
 
-    analysis_requirements = []
+    system_prompt = """
+You are a YouTube transcript analysis assistant.
 
-    if summary_type == "Brief Summary":
-        analysis_requirements.append(
-            "summary: Write a clear 2–3 sentence summary."
-        )
+Summarize only the information provided.
+Do not invent facts.
+Do not add information that is not present.
 
-    elif summary_type == "Detailed Summary":
-        analysis_requirements.append(
-            "summary: Write a comprehensive summary using "
-            "well-structured paragraphs."
-        )
+Preserve:
+- important facts
+- names
+- examples
+- arguments
+- conclusions
+- useful details
 
-    elif summary_type == "Bullet Points":
-        analysis_requirements.append(
-            "summary: Summarize the video using clear bullet points."
-        )
+Keep the output compact.
+"""
 
-    elif summary_type == "Key Timestamps":
-        analysis_requirements.append(
-            "summary: Identify the most important sections of the "
-            "video and include their REAL timestamps. "
-            "Use timestamps from the supplied timestamped transcript. "
-            "Do not invent timestamps."
-        )
+    user_prompt = f"""
+This is transcript chunk {chunk_number} of {total_chunks}.
 
-    if include_takeaways:
-        analysis_requirements.append(
-            "takeaways: Give the top 5 specific and practical "
-            "key takeaways."
-        )
+Create a concise but informative summary of this chunk.
 
-    if include_topics:
-        analysis_requirements.append(
-            "topics: List the main topics and themes discussed."
-        )
+The transcript contains timestamps in square brackets.
+Keep important timestamps when they are useful.
 
-    if include_sentiment:
-        analysis_requirements.append(
-            "sentiment: Briefly describe the overall tone and "
-            "sentiment of the video."
-        )
+TRANSCRIPT CHUNK:
 
-    if include_actions:
-        analysis_requirements.append(
-            "actions: Extract concrete action items, tasks, "
-            "steps, or recommendations. If none exist, say "
-            "'No specific action items found.'"
-        )
+{chunk_text}
+"""
 
-    requested = "\n".join(
-        f"- {item}" for item in analysis_requirements
+    return ask_groq(
+        user_prompt=user_prompt,
+        system_prompt=system_prompt,
+        max_tokens=750,
     )
+
+
+# ============================================================
+# FINAL ANALYSIS
+# ============================================================
+
+def generate_final_analysis(
+    chunk_summaries,
+    options,
+    summary_type,
+    original_segments,
+):
+    """
+    Generate the final analysis using compact chunk summaries.
+
+    This prevents sending the entire original transcript to Groq.
+    """
+
+    tasks = []
+
+    if options["summary"]:
+        tasks.append(
+            f"Create a {summary_type.lower()} overall summary."
+        )
+
+    if options["takeaways"]:
+        tasks.append(
+            "Extract the most important key takeaways."
+        )
+
+    if options["topics"]:
+        tasks.append(
+            "Identify the main topics discussed."
+        )
+
+    if options["sentiment"]:
+        tasks.append(
+            "Analyze the overall sentiment and tone."
+        )
+
+    if options["actions"]:
+        tasks.append(
+            "Extract clear action items, recommendations, "
+            "or things the viewer should do."
+        )
+
+    # Build a compact list of REAL timestamps that actually exist.
+    timestamp_reference = []
+
+    for segment in original_segments:
+        timestamp_reference.append(
+            f"[{format_timestamp(segment['start'])}]"
+        )
+
+    timestamp_reference = list(
+        dict.fromkeys(timestamp_reference)
+    )
+
+    if options["timestamps"]:
+        tasks.append(
+            "Identify important moments and their timestamps. "
+            "Use ONLY timestamps from the supplied timestamp list. "
+            "Never invent a timestamp."
+        )
+
+    compact_sources = []
+
+    for index, summary in enumerate(chunk_summaries, start=1):
+        compact_sources.append(
+            f"CHUNK {index}:\n{summary}"
+        )
+
+    source_text = "\n\n".join(compact_sources)
 
     system_prompt = """
 You are an expert YouTube video analysis assistant.
 
-Analyze the supplied transcript accurately.
+Use only the supplied transcript summaries and timestamp
+reference information.
 
-IMPORTANT RULES:
+Do not invent facts.
+Do not invent timestamps.
 
-1. Do not invent facts.
-2. Do not invent timestamps.
-3. For timestamp-related output, ONLY use timestamps that
-   actually appear in the supplied timestamped transcript.
-4. Keep the output concise but useful.
-5. Return valid JSON only.
-6. Do not wrap the JSON in Markdown code fences.
+Write clear, useful, well-structured results.
 
-Use this exact JSON structure:
+Use Markdown headings where appropriate.
+"""
 
-{
-  "summary": "...",
-  "takeaways": "...",
-  "topics": "...",
-  "sentiment": "...",
-  "actions": "..."
-}
+    timestamp_section = ""
 
-For fields that were not requested, return an empty string.
+    if options["timestamps"]:
+        timestamp_section = f"""
+
+REAL TIMESTAMPS AVAILABLE:
+
+{", ".join(timestamp_reference)}
+
+You MUST select timestamps only from this list.
 """
 
     user_prompt = f"""
-SUMMARY TYPE:
-{summary_type}
+Perform the following requested tasks:
 
-REQUESTED ANALYSIS:
-{requested}
+{chr(10).join("- " + task for task in tasks)}
 
-TIMESTAMPED TRANSCRIPT:
---------------------------------------------------
-{timestamped_transcript[:30000]}
---------------------------------------------------
+{timestamp_section}
 
-PLAIN TRANSCRIPT:
---------------------------------------------------
-{transcript[:30000]}
---------------------------------------------------
+TRANSCRIPT CHUNK SUMMARIES:
+
+{source_text}
 """
 
-    messages = [
-        {
-            "role": "system",
-            "content": system_prompt.strip(),
-        },
-        {
-            "role": "user",
-            "content": user_prompt.strip(),
-        },
-    ]
-
-    result, error = groq_request(
-        messages,
-        max_tokens=5000,
-        retries=2,
+    result = ask_groq(
+        user_prompt=user_prompt,
+        system_prompt=system_prompt,
+        max_tokens=1200,
     )
 
-    if error:
-        return None, error
-
-    # --------------------------------------------------------
-    # Parse JSON
-    # --------------------------------------------------------
-
-    try:
-        parsed = json.loads(result)
-
-    except json.JSONDecodeError:
-
-        # Sometimes a model still puts ```json around the response.
-        cleaned = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            result.strip(),
-            flags=re.IGNORECASE,
-        )
-
-        try:
-            parsed = json.loads(cleaned)
-
-        except json.JSONDecodeError:
-            return None, (
-                "AI returned an invalid analysis format. "
-                "Please try again."
-            )
-
-    if not isinstance(parsed, dict):
-        return None, "AI returned an unexpected analysis format."
-
-    return {
-        "summary": str(parsed.get("summary", "")).strip(),
-        "takeaways": str(parsed.get("takeaways", "")).strip(),
-        "topics": str(parsed.get("topics", "")).strip(),
-        "sentiment": str(parsed.get("sentiment", "")).strip(),
-        "actions": str(parsed.get("actions", "")).strip(),
-    }, None
+    return result
 
 
 # ============================================================
-# MARKDOWN → SAFE HTML
+# OPTIONAL SENTIMENT / TOPIC EXTRACTION FALLBACK
 # ============================================================
 
-def safe_markdown(text):
-    """
-    Basic Markdown-like rendering without allowing arbitrary
-    HTML from the AI response.
-    """
-
-    if not text:
-        return ""
-
-    escaped = html.escape(text)
-
-    # Bold
-    escaped = re.sub(
-        r"\*\*(.+?)\*\*",
-        r"<strong>\1</strong>",
-        escaped,
-    )
-
-    # Bullet points
-    lines = escaped.split("\n")
-    rendered = []
-
-    for line in lines:
-
-        stripped = line.strip()
-
-        if stripped.startswith("- "):
-            rendered.append(
-                f"<div style='margin:4px 0'>• "
-                f"{stripped[2:]}</div>"
-            )
-
-        elif stripped.startswith("* "):
-            rendered.append(
-                f"<div style='margin:4px 0'>• "
-                f"{stripped[2:]}</div>"
-            )
-
-        else:
-            rendered.append(line)
-
-    return "<br>".join(rendered)
-
-
-# ============================================================
-# PAGE CONFIG
-# ============================================================
-
-st.set_page_config(
-    page_title="YouTube Video Summarizer",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-
-# ============================================================
-# DESIGN SYSTEM
-# ============================================================
-
-st.markdown(
-    """
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;650;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-
-<style>
-
-:root{
-    --bg:#060a14;
-    --glass:rgba(16,21,35,.58);
-    --glass-strong:rgba(16,21,35,.8);
-    --border:rgba(148,163,184,.14);
-    --border-soft:rgba(148,163,184,.09);
-    --text:#f2f4f8;
-    --muted:#8d99ae;
-    --red:#ff3b5c;
-    --red-soft:rgba(255,59,92,.14);
-    --cyan:#22d3ee;
-    --cyan-soft:rgba(34,211,238,.14);
-    --violet:#a78bfa;
-    --violet-soft:rgba(167,139,250,.14);
-    --amber:#fbbf24;
-    --amber-soft:rgba(251,191,36,.14);
-}
-
-html, body, [class*="css"]{
-    font-family:'Inter',-apple-system,sans-serif
-}
-
-.stApp{
-    background:
-      radial-gradient(circle at 12% -8%, rgba(255,59,92,.10), transparent 32%),
-      radial-gradient(circle at 88% 0%, rgba(34,211,238,.08), transparent 30%),
-      var(--bg);
-    color:var(--text);
-}
-
-.block-container{
-    max-width:980px;
-    padding:1.4rem 1.5rem 4rem
-}
-
-header[data-testid="stHeader"]{
-    background:transparent!important;
-    box-shadow:none!important;
-    height:2.4rem!important;
-    min-height:0!important
-}
-
-header[data-testid="stHeader"] [data-testid="stToolbarActions"]{
-    display:none!important
-}
-
-header[data-testid="stHeader"] [data-testid="stDecoration"]{
-    display:none!important
-}
-
-#MainMenu{
-    visibility:hidden!important
-}
-
-footer{
-    visibility:hidden!important
-}
-
-[data-testid="stSidebarCollapsedControl"]{
-    z-index:999999!important;
-    opacity:1!important;
-    visibility:visible!important
-}
-
-section[data-testid="stSidebar"]{
-    background:linear-gradient(180deg,#0a0f1c,#060a14);
-    border-right:1px solid var(--border)
-}
-
-
-/* TOPBAR */
-
-.topbar{
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    padding:2px 2px 22px
-}
-
-.topbar-brand{
-    display:flex;
-    align-items:center;
-    gap:10px
-}
-
-.topbar-mark{
-    width:34px;
-    height:34px;
-    border-radius:10px;
-    display:grid;
-    place-items:center;
-    font-size:17px;
-    background:linear-gradient(135deg,var(--red),#ff7a45);
-    box-shadow:0 8px 22px rgba(255,59,92,.28)
-}
-
-.topbar-word{
-    font-family:'Sora',sans-serif;
-    font-weight:650;
-    font-size:15px;
-    letter-spacing:-.01em;
-    color:var(--text)
-}
-
-.topbar-pill{
-    padding:6px 12px;
-    border-radius:999px;
-    background:var(--glass);
-    border:1px solid var(--border);
-    color:var(--muted);
-    font-size:.76rem;
-    backdrop-filter:blur(12px)
-}
-
-
-/* HERO */
-
-.hero{
-    padding:8px 4px 30px
-}
-
-.hero h1{
-    font-family:'Sora',sans-serif;
-    font-weight:800;
-    font-size:clamp(2.1rem,4.6vw,3.1rem);
-    line-height:1.06;
-    letter-spacing:-.03em;
-    margin:0 0 12px;
-    max-width:15ch
-}
-
-.hero p{
-    color:var(--muted);
-    font-size:1.05rem;
-    line-height:1.55;
-    max-width:46ch;
-    margin:0
-}
-
-
-/* INPUT */
-
-.input-dock{
-    padding:8px;
-    border-radius:20px;
-    border:1px solid var(--border);
-    background:var(--glass);
-    backdrop-filter:blur(22px);
-    -webkit-backdrop-filter:blur(22px);
-    box-shadow:0 20px 50px rgba(0,0,0,.35);
-    margin-bottom:16px
-}
-
-.input-dock div[data-testid="stTextInput"] input{
-    background:transparent!important;
-    border:none!important;
-    color:var(--text)!important;
-    font-size:.98rem!important;
-    padding:12px 6px!important;
-    box-shadow:none!important
-}
-
-.input-dock div[data-testid="stTextInput"] input::placeholder{
-    color:#5c6a83!important
-}
-
-.input-dock div[data-baseweb="input"]{
-    background:transparent!important;
-    border:none!important
-}
-
-.input-dock [data-testid="stHorizontalBlock"]{
-    align-items:center
-}
-
-
-/* PANELS */
-
-.glass-panel{
-    padding:22px 24px;
-    border-radius:20px;
-    border:1px solid var(--border);
-    background:var(--glass);
-    backdrop-filter:blur(20px);
-    -webkit-backdrop-filter:blur(20px);
-    box-shadow:0 16px 40px rgba(0,0,0,.25);
-    margin-bottom:16px
-}
-
-.panel-label{
-    color:var(--muted);
-    font-size:.74rem;
-    letter-spacing:.03em;
-    font-weight:600;
-    margin-bottom:4px
-}
-
-.panel-title{
-    font-family:'Sora',sans-serif;
-    font-weight:650;
-    font-size:1.05rem;
-    color:var(--text);
-    margin:0 0 14px
-}
-
-div[data-testid="stExpander"]{
-    border:1px solid var(--border)!important;
-    border-radius:18px!important;
-    background:var(--glass)!important;
-    backdrop-filter:blur(18px);
-    overflow:hidden
-}
-
-div[data-testid="stExpander"] summary{
-    font-family:'Sora',sans-serif;
-    font-weight:600;
-    color:var(--text)!important
-}
-
-
-/* BUTTONS */
-
-.stButton>button{
-    border-radius:13px!important;
-    font-weight:600!important;
-    border:1px solid var(--border)!important;
-    background:var(--glass-strong)!important;
-    color:var(--text)!important;
-    min-height:46px;
-    transition:transform .15s ease,border-color .15s ease
-}
-
-.stButton>button:hover{
-    transform:translateY(-1px);
-    border-color:rgba(255,59,92,.4)!important
-}
-
-.stButton>button[kind="primary"]{
-    background:linear-gradient(135deg,var(--red),#ff7a45)!important;
-    border:none!important;
-    color:#fff!important;
-    box-shadow:0 14px 34px rgba(255,59,92,.24)!important;
-    font-family:'Sora',sans-serif
-}
-
-.stButton>button[kind="primary"]:hover{
-    transform:translateY(-1px) scale(1.005)
-}
-
-.stDownloadButton>button{
-    border-radius:13px!important;
-    border:1px solid var(--border)!important;
-    background:var(--glass)!important;
-    color:var(--text)!important;
-    font-weight:600!important
-}
-
-
-/* CONTROLS */
-
-div[data-testid="stSelectbox"] div[data-baseweb="select"]{
-    background:rgba(8,12,22,.7)!important;
-    border-radius:11px!important;
-    border:1px solid var(--border)!important
-}
-
-div[data-testid="stCheckbox"] label p{
-    color:var(--text)!important;
-    font-size:.92rem
-}
-
-
-/* STATS */
-
-.stat-readout{
-    font-family:'JetBrains Mono','SFMono-Regular',ui-monospace,monospace;
-    color:var(--cyan);
-    font-size:.86rem;
-    letter-spacing:.01em
-}
-
-
-/* SUMMARY */
-
-.summary-card{
-    padding:20px 22px;
-    border-radius:18px;
-    border:1px solid var(--red-soft);
-    border-left:3px solid var(--red);
-    background:
-        linear-gradient(135deg,rgba(255,59,92,.06),transparent 60%),
-        var(--glass);
-    backdrop-filter:blur(18px);
-    margin-bottom:6px
-}
-
-.summary-card p{
-    margin:0;
-    line-height:1.6;
-    color:#e7ebf3
-}
-
-
-/* ANALYSIS */
-
-.analysis-card{
-    padding:18px 20px;
-    border-radius:16px;
-    border:1px solid var(--border-soft);
-    background:var(--glass);
-    backdrop-filter:blur(16px);
-    height:100%;
-    box-sizing:border-box
-}
-
-.analysis-card.takeaways{
-    border-left:3px solid var(--cyan);
-    background:
-        linear-gradient(135deg,var(--cyan-soft),transparent 55%),
-        var(--glass)
-}
-
-.analysis-card.topics{
-    border-left:3px solid var(--violet);
-    background:
-        linear-gradient(135deg,var(--violet-soft),transparent 55%),
-        var(--glass)
-}
-
-.analysis-card.sentiment{
-    border-left:3px solid var(--amber);
-    background:
-        linear-gradient(135deg,var(--amber-soft),transparent 55%),
-        var(--glass)
-}
-
-.analysis-card.actions{
-    border-left:3px solid var(--red);
-    background:
-        linear-gradient(135deg,var(--red-soft),transparent 55%),
-        var(--glass)
-}
-
-.analysis-card h4{
-    font-family:'Sora',sans-serif;
-    font-weight:650;
-    font-size:.92rem;
-    margin:0 0 8px;
-    color:var(--text)
-}
-
-.analysis-card .card-body{
-    color:#cbd4e3;
-    font-size:.9rem;
-    line-height:1.55
-}
-
-
-/* TRANSCRIPT */
-
-div[data-testid="stTextArea"] textarea{
-    background:rgba(6,10,20,.75)!important;
-    border-radius:14px!important;
-    border:1px solid var(--border)!important;
-    color:#c7d0de!important;
-    font-family:'JetBrains Mono',ui-monospace,monospace!important;
-    font-size:.82rem!important
-}
-
-
-/* FOOTER */
-
-.footer-note{
-    text-align:center;
-    color:#5c6a83;
-    font-size:.8rem;
-    padding:22px 0 4px
-}
-
-
-/* ALERTS */
-
-div[data-testid="stAlert"]{
-    border-radius:16px!important;
-    border:1px solid var(--border)!important;
-    backdrop-filter:blur(16px)
-}
-
-div[data-testid="stAlert"] p{
-    color:var(--text)!important
-}
-
-div[data-testid="stAlertContentError"],
-div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]){
-    background:
-        linear-gradient(135deg,var(--red-soft),transparent 60%),
-        var(--glass)!important
-}
-
-div[data-testid="stAlertContentSuccess"],
-div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]){
-    background:
-        linear-gradient(135deg,rgba(52,211,153,.14),transparent 60%),
-        var(--glass)!important
-}
-
-div[data-testid="stAlertContentWarning"],
-div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]){
-    background:
-        linear-gradient(135deg,var(--amber-soft),transparent 60%),
-        var(--glass)!important
-}
-
-
-@media(max-width:820px){
-    .block-container{
-        padding-left:1rem;
-        padding-right:1rem
-    }
-
-    .hero h1{
-        max-width:none
-    }
-}
-
-</style>
-""",
-    unsafe_allow_html=True,
-)
+def clean_markdown_for_html(text):
+    """Basic HTML escaping for safe display."""
+    return html.escape(text).replace("\n", "<br>")
 
 
 # ============================================================
@@ -1203,544 +922,484 @@ div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]){
 
 st.markdown(
     """
-<div class="topbar">
-    <div class="topbar-brand">
-        <div class="topbar-mark">🎬</div>
-        <div class="topbar-word">Video Summarizer</div>
+    <div class="hero">
+        <div class="hero-badge">AI-POWERED VIDEO ANALYSIS</div>
+
+        <h1>YouTube Video Summarizer</h1>
+
+        <p>
+            Turn long YouTube videos into concise summaries,
+            key takeaways, topics, timestamps, sentiment,
+            and actionable insights.
+        </p>
     </div>
-
-    
-</div>
-
-<div class="hero">
-    <h1>YouTube Video Summarizer</h1>
-    <p>
-        Paste any YouTube URL and get an AI-powered summary
-        in seconds.
-    </p>
-</div>
-""",
+    """,
     unsafe_allow_html=True,
 )
 
 
 # ============================================================
-# SIDEBAR
+# INPUT CARD
 # ============================================================
 
-with st.sidebar:
-
-    st.markdown(
-        '<div class="panel-title">📖 How it works</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-1. **Paste** a YouTube URL
-2. **Fetch** the video transcript
-3. **Choose** summary type
-4. **Get** AI-powered insights
-        """
-    )
-
-    st.markdown("---")
-
-    st.markdown(
-        '<div class="panel-title">💡 Tips</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-- Works best with **educational** videos
-- Some videos have **captions disabled**
-- Transcripts are **cached for 1 hour**
-- Works best with English videos
-        """
-    )
-
-    st.markdown("---")
-
-    st.caption("Powered by Groq AI")
-
-
-# ============================================================
-# URL INPUT
-# ============================================================
+st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
 st.markdown(
-    '<div class="input-dock">',
+    '<div class="section-title">YouTube Video</div>',
     unsafe_allow_html=True,
 )
 
-col1, col2 = st.columns([4, 1])
+video_url = st.text_input(
+    "Paste YouTube URL",
+    value=st.session_state.video_url or "",
+    placeholder="https://www.youtube.com/watch?v=...",
+    label_visibility="collapsed",
+)
+
+col1, col2 = st.columns([1, 1])
 
 with col1:
-
-    url = st.text_input(
-        "🔗 Enter YouTube Video URL",
-        placeholder=(
-            "Paste a YouTube URL — "
-            "https://www.youtube.com/watch?v=..."
-        ),
-        label_visibility="collapsed",
+    fetch_clicked = st.button(
+        "Fetch Transcript",
+        use_container_width=True,
+        type="primary",
     )
 
 with col2:
-
-    fetch_btn = st.button(
-        "Fetch",
+    clear_clicked = st.button(
+        "Clear",
         use_container_width=True,
     )
 
-st.markdown(
-    "</div>",
-    unsafe_allow_html=True,
-)
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
-# FETCH BUTTON
+# CLEAR
 # ============================================================
 
-if fetch_btn:
+if clear_clicked:
+    st.session_state.transcript_data = None
+    st.session_state.video_id = None
+    st.session_state.video_url = None
+    st.session_state.analysis_result = None
+    st.rerun()
 
-    if not url.strip():
 
-        st.error("⚠️ Please enter a YouTube video URL.")
+# ============================================================
+# FETCH TRANSCRIPT
+# ============================================================
 
-    elif not extract_video_id(url):
+if fetch_clicked:
 
+    video_id = extract_video_id(video_url)
+
+    if not video_id:
         st.error(
-            "❌ Invalid YouTube URL. "
-            "Use a normal YouTube video, Shorts, or youtu.be URL."
+            "Please enter a valid YouTube URL."
         )
 
     else:
+        try:
+            with st.spinner(
+                "Fetching transcript..."
+            ):
+                segments = get_transcript(video_url)
 
-        with st.spinner("📥 Fetching transcript..."):
+            st.session_state.transcript_data = segments
+            st.session_state.video_id = video_id
+            st.session_state.video_url = video_url
+            st.session_state.analysis_result = None
 
-            segments, timestamped_transcript, error = (
-                get_transcript(url)
+            st.success(
+                "Transcript fetched successfully."
             )
 
-        if error:
+        except Exception as exc:
+            st.error(str(exc))
 
-            st.error(f"❌ {error}")
+
+# ============================================================
+# DISPLAY TRANSCRIPT INFO
+# ============================================================
+
+segments = st.session_state.transcript_data
+
+if segments:
+
+    transcript_text = build_transcript_text(segments)
+    timestamped_transcript = build_timestamped_transcript(segments)
+
+    total_chars = len(transcript_text)
+    total_words = len(transcript_text.split())
+
+    # Approximate token count.
+    approximate_tokens = max(
+        1,
+        int(total_chars / 4),
+    )
+
+    st.markdown(
+        "<br>",
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # Metrics
+    # --------------------------------------------------------
+
+    m1, m2, m3, m4 = st.columns(4)
+
+    with m1:
+        st.metric(
+            "Transcript Words",
+            f"{total_words:,}",
+        )
+
+    with m2:
+        st.metric(
+            "Segments",
+            f"{len(segments):,}",
+        )
+
+    with m3:
+        st.metric(
+            "Approx. Tokens",
+            f"{approximate_tokens:,}",
+        )
+
+    with m4:
+        first_time = segments[0]["start"]
+        last_segment = segments[-1]
+        last_time = (
+            last_segment["start"]
+            + last_segment.get("duration", 0)
+        )
+
+        st.metric(
+            "Video Length",
+            format_timestamp(last_time or first_time),
+        )
+
+    # --------------------------------------------------------
+    # Advanced settings
+    # --------------------------------------------------------
+
+    st.markdown(
+        "<br>",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander(
+        "⚙️ Advanced Settings",
+        expanded=False,
+    ):
+
+        s1, s2 = st.columns(2)
+
+        with s1:
+            summary_type = st.selectbox(
+                "Summary Type",
+                [
+                    "Brief Summary",
+                    "Detailed Summary",
+                    "Bullet Points",
+                    "Key Timestamps",
+                ],
+                index=0,
+            )
+
+        with s2:
+            st.caption(
+                "Long transcripts are automatically divided "
+                "into smaller Groq-safe chunks."
+            )
+
+        st.markdown(
+            "### Additional Analysis"
+        )
+
+        a1, a2, a3, a4 = st.columns(4)
+
+        with a1:
+            extra_takeaways = st.checkbox(
+                "Key Takeaways",
+                value=True,
+            )
+
+        with a2:
+            extra_topics = st.checkbox(
+                "Topic Extraction",
+                value=False,
+            )
+
+        with a3:
+            extra_sentiment = st.checkbox(
+                "Sentiment Analysis",
+                value=False,
+            )
+
+        with a4:
+            extra_actions = st.checkbox(
+                "Action Items",
+                value=False,
+            )
+
+    # ========================================================
+    # GENERATE BUTTON
+    # ========================================================
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    generate_clicked = st.button(
+        "✨ Generate Summary",
+        use_container_width=True,
+        type="primary",
+    )
+
+    # ========================================================
+    # GENERATE
+    # ========================================================
+
+    if generate_clicked:
+
+        options = {
+            "summary": True,
+            "timestamps": summary_type == "Key Timestamps",
+            "takeaways": extra_takeaways,
+            "topics": extra_topics,
+            "sentiment": extra_sentiment,
+            "actions": extra_actions,
+        }
+
+        chunks = split_timestamped_transcript(
+            segments,
+            max_chars=7000,
+        )
+
+        if not chunks:
+            st.error(
+                "The transcript could not be divided into analysis chunks."
+            )
 
         else:
 
-            transcript = build_transcript_text(segments)
-
-            word_count = len(transcript.split())
-
-            st.session_state["transcript"] = transcript
-            st.session_state["timestamped_transcript"] = (
-                timestamped_transcript
-            )
-            st.session_state["segments"] = segments
-            st.session_state["video_url"] = url
-
-            st.success(
-                f"✅ Transcript loaded successfully — "
-                f"{word_count:,} words."
+            st.info(
+                f"Long-transcript protection: "
+                f"{len(chunks)} smaller chunk(s) will be analyzed."
             )
 
+            chunk_summaries = []
 
-# ============================================================
-# SETTINGS
-# ============================================================
+            progress = st.progress(0)
+            status = st.empty()
 
-with st.expander(
-    "⚙️ Advanced Settings",
-    expanded=False,
-):
+            generation_failed = False
 
-    col_a, col_b = st.columns(2)
+            for index, chunk in enumerate(chunks):
 
-    with col_a:
+                status.write(
+                    f"Analyzing transcript chunk "
+                    f"{index + 1} of {len(chunks)}..."
+                )
 
-        st.markdown("**📋 Summary Type**")
+                try:
+                    result = summarize_transcript_chunk(
+                        chunk["text"],
+                        index + 1,
+                        len(chunks),
+                    )
 
-        summary_type = st.selectbox(
-            "Choose format:",
-            [
-                "Brief Summary",
-                "Detailed Summary",
-                "Bullet Points",
-                "Key Timestamps",
-            ],
-            index=0,
+                    chunk_summaries.append(result)
+
+                except Exception as exc:
+                    generation_failed = True
+                    st.error(
+                        f"Failed on chunk {index + 1}: {exc}"
+                    )
+                    break
+
+                progress.progress(
+                    (index + 1) / len(chunks)
+                )
+
+                # Keep requests spread out to avoid TPM bursts.
+                if index < len(chunks) - 1:
+                    time.sleep(3)
+
+            progress.empty()
+            status.empty()
+
+            if not generation_failed:
+
+                with st.spinner(
+                    "Creating final analysis..."
+                ):
+
+                    try:
+                        final_result = generate_final_analysis(
+                            chunk_summaries,
+                            options,
+                            summary_type,
+                            segments,
+                        )
+
+                        st.session_state.analysis_result = (
+                            final_result
+                        )
+
+                    except Exception as exc:
+                        st.error(
+                            f"Final Groq analysis failed: {exc}"
+                        )
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    if st.session_state.analysis_result:
+
+        st.markdown(
+            "<br>",
+            unsafe_allow_html=True,
         )
 
-    with col_b:
-
-        st.markdown("**🎯 Extra Features**")
-
-        include_takeaways = st.checkbox(
-            "Key Takeaways",
-            value=True,
+        st.markdown(
+            """
+            <div class="result-card">
+                <div class="result-title">
+                    ✨ AI Analysis
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        include_topics = st.checkbox(
-            "Topic Extraction",
-            value=True,
+        st.markdown(
+            st.session_state.analysis_result
         )
-
-        include_sentiment = st.checkbox(
-            "Sentiment Analysis",
-            value=False,
-        )
-
-        include_actions = st.checkbox(
-            "Action Items",
-            value=False,
-        )
-
-
-# ============================================================
-# GENERATE SUMMARY
-# ============================================================
-
-if st.button(
-    "🚀 Generate Summary",
-    type="primary",
-    use_container_width=True,
-):
-
-    # --------------------------------------------------------
-    # CHECK TRANSCRIPT
-    # --------------------------------------------------------
-
-    if "transcript" not in st.session_state:
-
-        st.error(
-            "⚠️ Fetch a transcript first. "
-            "Paste a YouTube URL and click Fetch."
-        )
-
-    else:
-
-        transcript = st.session_state["transcript"]
-        timestamped_transcript = st.session_state[
-            "timestamped_transcript"
-        ]
 
         # ----------------------------------------------------
-        # PROGRESS
+        # Timestamp section
         # ----------------------------------------------------
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        if summary_type == "Key Timestamps":
 
-        status_text.text(
-            "🤖 Sending transcript to AI..."
-        )
-
-        progress_bar.progress(30)
-
-        # ----------------------------------------------------
-        # AI
-        # ----------------------------------------------------
-
-        analysis, error = generate_analysis(
-            transcript=transcript,
-            timestamped_transcript=timestamped_transcript,
-            summary_type=summary_type,
-            include_takeaways=include_takeaways,
-            include_topics=include_topics,
-            include_sentiment=include_sentiment,
-            include_actions=include_actions,
-        )
-
-        if error:
-
-            progress_bar.empty()
-            status_text.empty()
-
-            st.error(f"❌ {error}")
-
-        else:
-
-            progress_bar.progress(90)
-
-            status_text.text(
-                "📝 Preparing results..."
-            )
-
-            # ------------------------------------------------
-            # RESULTS
-            # ------------------------------------------------
-
-            st.session_state["analysis"] = analysis
-
-            progress_bar.progress(100)
-
-            status_text.text("✅ Done!")
-
-            time.sleep(0.2)
-
-            progress_bar.empty()
-            status_text.empty()
-
-            st.success(
-                "✨ Summary generated successfully!"
-            )
-
-            # =================================================
-            # MAIN SUMMARY
-            # =================================================
+            st.markdown("<br>", unsafe_allow_html=True)
 
             st.markdown(
-                '<div class="panel-title" '
-                'style="margin-top:18px">'
-                '📝 Summary'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-
-            summary_html = safe_markdown(
-                analysis.get("summary", "")
-            )
-
-            st.markdown(
-                f"""
-<div class="summary-card">
-    <p>{summary_html}</p>
-</div>
+                """
+                <div class="result-card">
+                    <div class="result-title">
+                        ⏱️ Available Real Timestamps
+                    </div>
+                </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # =================================================
-            # TRANSCRIPT
-            # =================================================
+            # Show transcript timestamps independently so the
+            # timestamps always come from actual transcript data.
+            timestamp_html = ""
 
-            with st.expander(
-                "📜 View Full Timestamped Transcript"
-            ):
+            seen_timestamps = set()
 
-                st.text_area(
-                    "Transcript",
-                    timestamped_transcript,
-                    height=350,
-                    disabled=True,
-                    label_visibility="collapsed",
+            for segment in segments:
+
+                timestamp = format_timestamp(
+                    segment["start"]
                 )
 
-            # =================================================
-            # ADDITIONAL ANALYSIS
-            # =================================================
+                if timestamp not in seen_timestamps:
+                    seen_timestamps.add(timestamp)
 
-            has_extra = any(
-                [
-                    include_takeaways,
-                    include_topics,
-                    include_sentiment,
-                    include_actions,
-                ]
+                    timestamp_html += (
+                        f'<span class="timestamp">'
+                        f'{html.escape(timestamp)}'
+                        f"</span>"
+                    )
+
+            st.markdown(
+                timestamp_html,
+                unsafe_allow_html=True,
             )
 
-            if has_extra:
+    # ========================================================
+    # FULL TRANSCRIPT
+    # ========================================================
 
-                st.markdown(
-                    '<div class="panel-title" '
-                    'style="margin-top:18px">'
-                    '🔍 Additional Analysis'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
+    st.markdown("<br>", unsafe_allow_html=True)
 
-                # --------------------------------------------
-                # ROW 1
-                # --------------------------------------------
+    with st.expander(
+        "📜 View Full Timestamped Transcript",
+        expanded=False,
+    ):
 
-                row1_col1, row1_col2 = st.columns(2)
+        st.text_area(
+            "Transcript",
+            timestamped_transcript,
+            height=450,
+            label_visibility="collapsed",
+        )
 
-                if include_takeaways:
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
 
-                    with row1_col1:
+    report_parts = []
 
-                        body = safe_markdown(
-                            analysis.get("takeaways", "")
-                        )
+    report_parts.append(
+        "YOUTUBE VIDEO SUMMARIZER"
+    )
 
-                        st.markdown(
-                            f"""
-<div class="analysis-card takeaways">
-    <h4>📌 Key Takeaways</h4>
-    <div class="card-body">
-        {body}
-    </div>
-</div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+    report_parts.append(
+        f"Generated: "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
-                if include_topics:
+    report_parts.append(
+        f"Video URL: {st.session_state.video_url}"
+    )
 
-                    with row1_col2:
+    report_parts.append(
+        f"Video ID: {st.session_state.video_id}"
+    )
 
-                        body = safe_markdown(
-                            analysis.get("topics", "")
-                        )
+    report_parts.append(
+        "\n\n"
+        "==================== AI ANALYSIS ====================\n"
+    )
 
-                        st.markdown(
-                            f"""
-<div class="analysis-card topics">
-    <h4>🏷️ Topics Covered</h4>
-    <div class="card-body">
-        {body}
-    </div>
-</div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+    if st.session_state.analysis_result:
+        report_parts.append(
+            st.session_state.analysis_result
+        )
+    else:
+        report_parts.append(
+            "No analysis generated yet."
+        )
 
-                # --------------------------------------------
-                # ROW 2
-                # --------------------------------------------
+    report_parts.append(
+        "\n\n"
+        "==================== TIMESTAMPED TRANSCRIPT ====================\n"
+    )
 
-                row2_col1, row2_col2 = st.columns(2)
+    report_parts.append(
+        timestamped_transcript
+    )
 
-                if include_sentiment:
+    report_text = "\n".join(report_parts)
 
-                    with row2_col1:
-
-                        body = safe_markdown(
-                            analysis.get("sentiment", "")
-                        )
-
-                        st.markdown(
-                            f"""
-<div class="analysis-card sentiment"
-     style="margin-top:12px">
-
-    <h4>💭 Sentiment Analysis</h4>
-
-    <div class="card-body">
-        {body}
-    </div>
-
-</div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                if include_actions:
-
-                    with row2_col2:
-
-                        body = safe_markdown(
-                            analysis.get("actions", "")
-                        )
-
-                        st.markdown(
-                            f"""
-<div class="analysis-card actions"
-     style="margin-top:12px">
-
-    <h4>📝 Action Items</h4>
-
-    <div class="card-body">
-        {body}
-    </div>
-
-</div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-            # =================================================
-            # DOWNLOAD REPORT
-            # =================================================
-
-            video_url = st.session_state.get(
-                "video_url",
-                url,
-            )
-
-            word_count = len(
-                transcript.split()
-            )
-
-            full_report = f"""
-YouTube Video Summary Report
-==================================================
-
-Video URL:
-{video_url}
-
-Word Count:
-{word_count}
-
-Summary Type:
-{summary_type}
-
-Generated:
-{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-
-==================================================
-MAIN SUMMARY
-==================================================
-
-{analysis.get("summary", "")}
-
-
-==================================================
-ADDITIONAL ANALYSIS
-==================================================
-"""
-
-            if include_takeaways:
-
-                full_report += (
-                    "\nKEY TAKEAWAYS:\n"
-                    + analysis.get("takeaways", "")
-                    + "\n"
-                )
-
-            if include_topics:
-
-                full_report += (
-                    "\nTOPICS COVERED:\n"
-                    + analysis.get("topics", "")
-                    + "\n"
-                )
-
-            if include_sentiment:
-
-                full_report += (
-                    "\nSENTIMENT ANALYSIS:\n"
-                    + analysis.get("sentiment", "")
-                    + "\n"
-                )
-
-            if include_actions:
-
-                full_report += (
-                    "\nACTION ITEMS:\n"
-                    + analysis.get("actions", "")
-                    + "\n"
-                )
-
-            full_report += (
-                "\n\n"
-                "==================================================\n"
-                "TIMESTAMPED TRANSCRIPT\n"
-                "==================================================\n\n"
-                + timestamped_transcript
-            )
-
-            st.download_button(
-                label="📥 Download Full Report (.txt)",
-                data=full_report,
-                file_name="youtube_summary_report.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
+    st.download_button(
+        "⬇️ Download TXT Report",
+        data=report_text,
+        file_name=(
+            f"youtube_summary_"
+            f"{st.session_state.video_id}.txt"
+        ),
+        mime="text/plain",
+        use_container_width=True,
+    )
 
 
 # ============================================================
@@ -1749,10 +1408,9 @@ ADDITIONAL ANALYSIS
 
 st.markdown(
     """
-<p class='footer-note'>
-Built with Streamlit ❤️ · Powered by Groq AI · For CS Students
-</p>
-""",
+    <div class="footer">
+        YouTube Video Summarizer · Powered by Supadata + Groq
+    </div>
+    """,
     unsafe_allow_html=True,
 )
-

@@ -31,8 +31,10 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 # Conservative Groq limits for the user's current 8,000 TPM tier.
 # We intentionally keep each request well below the limit.
 CHUNK_MAX_CHARS = 3200
-CHUNK_MAX_OUTPUT_TOKENS = 300
-FINAL_MAX_OUTPUT_TOKENS = 900
+CHUNK_MAX_OUTPUT_TOKENS = 450
+MAIN_MAX_OUTPUT_TOKENS = 1300
+EXTRA_MAX_OUTPUT_TOKENS = 850
+REDUCE_MAX_OUTPUT_TOKENS = 700
 
 
 def _get_secret(name):
@@ -910,21 +912,25 @@ def split_transcript_into_chunks(segments, max_chars=CHUNK_MAX_CHARS):
 # ============================================================
 
 def summarize_chunk(chunk_text, chunk_number, total_chunks):
+    """Create information-rich notes from one transcript chunk."""
     system_prompt = """
-You are a transcript compression assistant.
+You are the first-stage transcript analyst for a high-quality YouTube summarizer.
 
-Summarize ONLY the supplied transcript chunk.
-Do not invent facts.
-Preserve important ideas, facts, examples, names, conclusions,
-and timestamps that are explicitly present.
-Be compact because another model will use your summary later.
+Analyze ONLY the supplied transcript chunk. Do not invent facts.
+Preserve concrete details that a final summarizer may need: main ideas,
+arguments, explanations, examples, definitions, names, numbers, conclusions,
+and important timestamp references.
+Do not write a tiny generic summary. Produce dense, useful notes in a few
+clear bullets or short paragraphs. Keep the original meaning intact.
 """
 
     prompt = f"""
 Transcript chunk {chunk_number} of {total_chunks}.
 
-Create a compact factual summary of this chunk.
-Preserve useful timestamp references such as [02:14] when they matter.
+Extract the important information from this chunk for a later final summary.
+Include enough detail that the final summary can explain WHAT was said and WHY
+it mattered, not just the topic name.
+Preserve useful timestamp references such as [02:14] when present.
 
 TRANSCRIPT:
 {chunk_text}
@@ -938,133 +944,173 @@ TRANSCRIPT:
     )
 
 
-# ============================================================
-# FINAL STRUCTURED ANALYSIS
-# ============================================================
+def reduce_notes(notes, target_chars=9500):
+    """Hierarchically compress all chunk notes without discarding later chunks."""
+    if not notes:
+        return ""
 
-def extract_json_object(text):
-    """Extract the first JSON object from model output."""
-    if not text:
-        return None
+    current = list(notes)
+    while len("\n\n".join(current)) > target_chars and len(current) > 1:
+        groups = []
+        group = []
+        group_chars = 0
 
-    cleaned = text.strip()
-    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+        for note in current:
+            note_block = note.strip()
+            if not note_block:
+                continue
+            extra = len(note_block) + 30
+            if group and group_chars + extra > 6500:
+                groups.append(group)
+                group = []
+                group_chars = 0
+            group.append(note_block)
+            group_chars += extra
 
-    try:
-        return json.loads(cleaned)
-    except Exception:
-        pass
+        if group:
+            groups.append(group)
 
-    match = re.search(r"\{.*\}", cleaned, flags=re.S)
-    if not match:
-        return None
+        reduced = []
+        for i, group_notes in enumerate(groups, start=1):
+            source = "\n\n".join(
+                f"SOURCE NOTE {j + 1}:\n{note}"
+                for j, note in enumerate(group_notes)
+            )
+            prompt = f"""
+Combine these transcript-analysis notes into one faithful master note block.
+Keep all important facts, examples, explanations, conclusions, and timestamp
+references. Remove repetition, but do NOT omit unique information.
+This is reduction pass group {i}.
 
-    try:
-        return json.loads(match.group(0))
-    except Exception:
-        return None
+{source}
+"""
+            result = ask_groq(
+                prompt,
+                system_prompt=(
+                    "You are a careful information-preserving editor. "
+                    "Merge notes without inventing or dropping unique facts."
+                ),
+                max_tokens=REDUCE_MAX_OUTPUT_TOKENS,
+                retries=2,
+            )
+            reduced.append(result)
+            if i < len(groups):
+                time.sleep(4)
+        current = reduced
+
+    return "\n\n".join(current)
 
 
-def generate_final_analysis(
-    chunk_summaries,
-    summary_type,
-    include_takeaways,
-    include_topics,
-    include_sentiment,
-    include_actions,
-    segments,
-):
-    """Create all requested user-facing analysis in one compact Groq call."""
+def generate_main_summary(source, summary_type):
+    """Generate the primary user-facing summary separately from extras."""
+    style_instructions = {
+        "Brief Summary": (
+            "Write about 3-5 substantial paragraphs. Cover the central message "
+            "plus the most important supporting points."
+        ),
+        "Detailed Summary": (
+            "Write a thorough multi-paragraph summary with clear sections or "
+            "paragraphs. Cover the progression of ideas, important explanations, "
+            "examples, and conclusions."
+        ),
+        "Bullet Points": (
+            "Write 10-16 informative bullet points. Each bullet should explain a "
+            "meaningful point rather than just naming a topic."
+        ),
+        "Key Timestamps": (
+            "Write a detailed chronological summary and include important timestamp "
+            "references exactly as they appear in the source notes."
+        ),
+    }
 
-    real_timestamps = []
-    for segment in segments:
-        ts = format_timestamp(segment["start"])
-        if ts not in real_timestamps:
-            real_timestamps.append(ts)
+    system_prompt = """
+You are an expert YouTube video summarizer.
+Use ONLY the supplied transcript-analysis notes.
+Do not invent facts, examples, claims, or timestamps.
+The user expects a useful, substantive summary, not a one-paragraph teaser.
+Preserve nuance and important details from the notes.
+"""
+    prompt = f"""
+SUMMARY TYPE: {summary_type}
 
+{style_instructions.get(summary_type, style_instructions['Brief Summary'])}
+
+MASTER TRANSCRIPT NOTES:
+{source}
+
+Write the final main summary now.
+"""
+    return ask_groq(
+        prompt,
+        system_prompt=system_prompt,
+        max_tokens=MAIN_MAX_OUTPUT_TOKENS,
+        retries=2,
+    )
+
+
+def generate_extra_analysis(source, include_takeaways, include_topics,
+                            include_sentiment, include_actions, include_timestamps,
+                            segments):
+    """Generate optional analysis separately so it cannot consume the main summary budget."""
     requested = {
-        "summary": True,
         "takeaways": include_takeaways,
         "topics": include_topics,
         "sentiment": include_sentiment,
         "actions": include_actions,
-        "timestamps": summary_type == "Key Timestamps",
+        "timestamps": include_timestamps,
     }
+    real_timestamps = list(dict.fromkeys(format_timestamp(s["start"]) for s in segments))
 
-    source = "\n\n".join(
-        f"CHUNK {i + 1}:\n{summary}"
-        for i, summary in enumerate(chunk_summaries)
-    )
-
-    # Keep the final prompt conservative too. This prevents a large number
-    # of chunk summaries from creating another oversized request.
-    source = source[:11000]
+    if not any(requested.values()):
+        return {key: "" for key in requested}
 
     system_prompt = """
-You are an expert YouTube video summarizer.
-
-Return VALID JSON ONLY. No Markdown fences.
-Use only the supplied transcript chunk summaries.
-Do not invent facts.
-Do not invent timestamps.
-
-Required JSON shape:
-{
-  "summary": "...",
-  "takeaways": "...",
-  "topics": "...",
-  "sentiment": "...",
-  "actions": "...",
-  "timestamps": "..."
-}
-
-For fields not requested, return an empty string.
-For timestamps, ONLY use timestamps from the supplied REAL TIMESTAMPS list.
+You are an expert video-analysis assistant.
+Use ONLY the supplied master transcript notes.
+Return valid JSON only, with the requested fields.
+Do not invent facts or timestamps.
+For timestamps, use ONLY timestamps that occur in the REAL TIMESTAMPS list.
 """
-
     prompt = f"""
-SUMMARY TYPE: {summary_type}
-
 REQUESTED FEATURES:
 {json.dumps(requested)}
 
 REAL TIMESTAMPS:
 {json.dumps(real_timestamps)}
 
-TRANSCRIPT CHUNK SUMMARIES:
+MASTER TRANSCRIPT NOTES:
 {source}
 
-Create the final analysis now.
+Requirements:
+- takeaways: 5-8 concrete lessons or conclusions when requested.
+- topics: 5-10 specific topics/themes when requested.
+- sentiment: explain the overall tone and why, when requested.
+- actions: practical actions explicitly supported by the video, when requested.
+- timestamps: list the most useful moments with their exact allowed timestamps,
+  when requested.
+
+JSON shape:
+{{
+  "takeaways": "",
+  "topics": "",
+  "sentiment": "",
+  "actions": "",
+  "timestamps": ""
+}}
 """
 
     raw = ask_groq(
         prompt,
         system_prompt=system_prompt,
-        max_tokens=FINAL_MAX_OUTPUT_TOKENS,
+        max_tokens=EXTRA_MAX_OUTPUT_TOKENS,
         retries=2,
     )
-
     parsed = extract_json_object(raw)
     if parsed:
-        return {
-            "summary": str(parsed.get("summary", "")).strip(),
-            "takeaways": str(parsed.get("takeaways", "")).strip(),
-            "topics": str(parsed.get("topics", "")).strip(),
-            "sentiment": str(parsed.get("sentiment", "")).strip(),
-            "actions": str(parsed.get("actions", "")).strip(),
-            "timestamps": str(parsed.get("timestamps", "")).strip(),
-        }
+        return {key: str(parsed.get(key, "")).strip() for key in requested}
+    return {key: "" for key in requested}
 
-    # Safe fallback if the model returned normal Markdown instead of JSON.
-    return {
-        "summary": raw,
-        "takeaways": "",
-        "topics": "",
-        "sentiment": "",
-        "actions": "",
-        "timestamps": "",
-    }
+
 
 
 # ============================================================
@@ -1356,7 +1402,7 @@ if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
             plain_transcript = build_plain_transcript(segments)
 
             # ------------------------------------------------
-            # Token-safe chunk analysis
+            # Token-safe, information-preserving analysis
             # ------------------------------------------------
             chunks = split_transcript_into_chunks(segments)
 
@@ -1379,24 +1425,17 @@ if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
                     f"🤖 Analyzing transcript chunk {index + 1} of {len(chunks)}..."
                 )
 
-                result = summarize_chunk(
-                    chunk,
-                    index + 1,
-                    len(chunks),
-                )
-
+                result = summarize_chunk(chunk, index + 1, len(chunks))
                 if result.startswith("❌") or result.startswith("⏳"):
                     st.error(result)
                     failed = True
                     break
 
                 chunk_summaries.append(result)
-
                 progress_bar.progress(
-                    min(65, 30 + int((index + 1) / len(chunks) * 35))
+                    min(55, 30 + int((index + 1) / len(chunks) * 25))
                 )
 
-                # Space calls out to reduce rolling TPM bursts.
                 if index < len(chunks) - 1:
                     time.sleep(4)
 
@@ -1405,34 +1444,44 @@ if st.button("🚀 Generate Summary", type="primary", use_container_width=True):
                 status_text.empty()
                 st.stop()
 
-            # Give the rolling TPM window a little room before the final call.
-            time.sleep(5)
+            status_text.text("🧩 Combining all transcript sections...")
+            progress_bar.progress(60)
+            time.sleep(4)
 
-            status_text.text("🧠 Building final summary and insights...")
-            progress_bar.progress(75)
-
-            final = generate_final_analysis(
-                chunk_summaries=chunk_summaries,
-                summary_type=summary_type,
-                include_takeaways=include_takeaways,
-                include_topics=include_topics,
-                include_sentiment=include_sentiment,
-                include_actions=include_actions,
-                segments=segments,
-            )
-
-            if final["summary"].startswith("❌") or final["summary"].startswith("⏳"):
+            master_notes = reduce_notes(chunk_summaries)
+            if master_notes.startswith("❌") or master_notes.startswith("⏳"):
                 progress_bar.empty()
                 status_text.empty()
-                st.error(final["summary"])
+                st.error(master_notes)
                 st.stop()
 
-            st.session_state.analysis_result = final["summary"]
-            st.session_state.extra_results = {
-                key: value
-                for key, value in final.items()
-                if key != "summary" and value
-            }
+            status_text.text("🧠 Writing the full summary...")
+            progress_bar.progress(72)
+            time.sleep(4)
+
+            main_summary = generate_main_summary(master_notes, summary_type)
+            if main_summary.startswith("❌") or main_summary.startswith("⏳"):
+                progress_bar.empty()
+                status_text.empty()
+                st.error(main_summary)
+                st.stop()
+
+            time.sleep(4)
+            status_text.text("🔍 Generating additional insights...")
+            progress_bar.progress(88)
+
+            extras = generate_extra_analysis(
+                master_notes,
+                include_takeaways,
+                include_topics,
+                include_sentiment,
+                include_actions,
+                summary_type == "Key Timestamps",
+                segments,
+            )
+
+            st.session_state.analysis_result = main_summary
+            st.session_state.extra_results = {k: v for k, v in extras.items() if v}
 
             progress_bar.progress(100)
             status_text.text("✅ Done!")

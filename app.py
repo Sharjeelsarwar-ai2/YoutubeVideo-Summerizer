@@ -1,4 +1,4 @@
-````python
+
 import html
 import json
 import re
@@ -1757,4 +1757,4 @@ Built with Streamlit ❤️ · Powered by Groq AI · For CS Students
 """,
     unsafe_allow_html=True,
 )
-````
+

@@ -1209,8 +1209,7 @@ st.markdown(
         <div class="topbar-word">Video Summarizer</div>
     </div>
 
-    <div class="topbar-pill">
-        Powered by Groq
+    
 </div>
 
 <div class="hero">

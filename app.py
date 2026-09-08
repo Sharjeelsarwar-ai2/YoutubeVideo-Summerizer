@@ -1048,6 +1048,30 @@ Write the final main summary now.
     )
 
 
+def extract_json_object(text):
+    """Extract the first JSON object from model output, tolerating code fences."""
+    if not text:
+        return None
+
+    cleaned = str(text).strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        return json.loads(cleaned)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    match = re.search(r"\{.*\}", cleaned, flags=re.S)
+    if not match:
+        return None
+
+    try:
+        return json.loads(match.group(0))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def generate_extra_analysis(source, include_takeaways, include_topics,
                             include_sentiment, include_actions, include_timestamps,
                             segments):

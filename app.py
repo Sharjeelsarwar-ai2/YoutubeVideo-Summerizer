@@ -1211,7 +1211,6 @@ st.markdown(
 
     <div class="topbar-pill">
         Powered by Groq
-    </div>
 </div>
 
 <div class="hero">
